@@ -62,48 +62,61 @@ function reap() {
 }
 
 // spawnNewGameServer spawns a new game instance on the given port.
-function spawnNewGameServer(port: number): number {
-	try {
-		console.info(`Trying to spawn game on port ${port}`)
+function spawnNewGameServer(port: number): Promise<number> {
+	return new Promise((resolve, reject) => {
+		try {
+			console.info(`Trying to spawn game on port ${port}`)
 
-		const proc = spawn(
-			`/mnt/desktop/server-build/server.x86_64 -batchmode -nographics -server -port ${port} -logfile log_${port}.out`
-		)
+			const proc = spawn(
+				`/mnt/desktop/server-build/server.x86_64 -batchmode -nographics -server -port ${port} -logfile log_${port}.out`
+			)
 
-		if (proc.killed) {
-			console.error("process killed???")
-			return -1
+			proc.on("message", () => {
+				console.info(`Just ran subprocess ${proc.pid} on port ${port}`)
+
+				resolve(proc.pid)
+			})
+
+			proc.on("error", (error) => {
+				console.error(error)
+
+				resolve(-1)
+			})
+		} catch (error) {
+			console.error(error)
+
+			resolve(-1)
 		}
+	})
+}
 
-		console.info(`Just ran subprocess ${proc.pid} on port ${port}`)
+async function CreateGameServer(lobby: Lobby): Promise<Lobby> {
+	lobby.port = GetNextPort()
 
-		return proc.pid
-	} catch (error) {
-		console.error(error)
+	lobby.pid = await spawnNewGameServer(lobby.port)
 
-		return -1
+	if (lobby.pid == -1) {
+		return lobby
 	}
+
+	lobbies.set(lobby.host + lobby.port, lobby)
+
+	return lobby
 }
 
 // Create a new lobby
 fastify.post("/lobby", async (request, reply) => {
-	const lobby: Lobby = request.body as Lobby
+	let lobby: Lobby = request.body as Lobby
 
-	lobby.port = GetNextPort()
-
-	lobby.pid = spawnNewGameServer(lobby.port)
+	lobby = await CreateGameServer(lobby)
 
 	if (lobby.pid == -1) {
 		reply.send({
 			error: true,
 		})
-
-		return
+	} else {
+		reply.send({ status: true })
 	}
-
-	lobbies.set(lobby.host + lobby.port, lobby)
-
-	reply.send({ status: true })
 })
 
 // Update a lobby
@@ -122,12 +135,29 @@ fastify.put("/lobby", async (request, reply) => {
 })
 
 // Run the server!
-fastify.listen(3000, function (err, address) {
+fastify.listen(3000, async function (err, address) {
 	if (err) {
 		fastify.log.error(err)
 		process.exit(1)
 	}
 
 	fastify.log.info(`server listening on ${address}`)
+
 	reap()
+
+	if (
+		(
+			await CreateGameServer({
+				name: "default",
+				host: "default",
+				maxPlayers: 0,
+				numPlayers: 0,
+				port: 0,
+				pid: 0,
+				dirty: false,
+			})
+		).pid == -1
+	) {
+		process.exit(1)
+	}
 })
